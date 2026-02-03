@@ -107,6 +107,61 @@ def calculate_key_compatibility(key1: str, key2: str) -> float:
     return -1.0  # Key clash - will sound bad
 
 
+def find_first_chorus_end(track: dict) -> float:
+    """
+    Find the END of the FIRST CHORUS - where to echo out.
+    
+    Simple approach: GPT identifies the first chorus and gives us chorus_end_time.
+    
+    Args:
+        track: Track dictionary with structure data
+    
+    Returns: Time in seconds where first chorus ends (for echo transition)
+    """
+    # Check both locations: track["structure"] and track directly (backward compatibility)
+    structure = track.get("structure", track)
+    
+    # NEW SIMPLE APPROACH: Use chorus_end_time directly from GPT
+    chorus_end = structure.get("chorus_end_time")
+    if chorus_end:
+        print(f"    → First chorus ends at {chorus_end:.1f}s")
+        last_line = structure.get("last_chorus_line", "")
+        if last_line:
+            print(f"    → Last line: \"{last_line[:50]}...\"" if len(last_line) > 50 else f"    → Last line: \"{last_line}\"")
+        return float(chorus_end)
+    
+    # FALLBACK: Check transition_candidates for chorus_end type
+    candidates = structure.get("transition_candidates", [])
+    
+    # Look for chorus_end type first
+    for candidate in candidates:
+        if candidate.get("type") == "chorus_end":
+            print(f"    → Found chorus_end at {candidate['time']:.1f}s")
+            return candidate["time"]
+    
+    # Look for any point with has_vocals_after=False
+    for candidate in candidates:
+        if candidate.get("has_vocals_after") == False:
+            print(f"    → Found vocal-free point at {candidate['time']:.1f}s")
+            return candidate["time"]
+    
+    # Fallback to recommended_transition
+    recommended = structure.get("recommended_transition")
+    if recommended:
+        print(f"    → Using recommended transition: {recommended:.1f}s")
+        return recommended
+    
+    # Final fallback: Use transition_point
+    transition_pt = structure.get("transition_point")
+    if transition_pt:
+        print(f"    → Using transition_point: {transition_pt:.1f}s")
+        return transition_pt
+    
+    # Last resort fallback
+    print(f"    → No chorus end found, using default 60s")
+    return 60.0
+
+
 def score_transition_candidate(candidate, current_track, next_track):
     """
     Score a transition point candidate based on multiple factors.
@@ -353,50 +408,34 @@ def generate_mixing_plan(
                 incoming_start_sec = 0.0
                 transition_type = "Fade In"
                 transition_point = None
+                first_chorus_end = None
                 incoming_intro = None
                 bpm_change_point = None
                 comment = f"Start with {track['title']} (BPM {track.get('bpm', 'N/A')})"
             else:
-                # === INTELLIGENT TRANSITION POINT SELECTION ===
-                print(f"  Analyzing transition: {last_track['title']} → {track['title']}")
+                # === ECHO TRANSITION: Find first chorus end ===
+                print(f"  Analyzing echo transition: {last_track['title']} → {track['title']}")
                 
-                # Use intelligent scoring to select best transition point
-                from_transition_point = select_best_transition_point(last_track, track)
+                # Find first_chorus_end from transition_candidates
+                first_chorus_end = find_first_chorus_end(last_track)
+                
                 to_intro_duration = track.get("intro_duration", 8.0)
-                to_has_early_vocals = track.get("has_vocals_in_first_8s", False)
-                
-                # Calculate dynamic overlap duration based on musical characteristics
-                dynamic_overlap = calculate_dynamic_overlap(last_track, track)
                 
                 # Check key compatibility
                 from_key = last_track.get("key", "")
                 to_key = track.get("key", "")
                 key_score = calculate_key_compatibility(from_key, to_key)
                 
-                # RULE: If incoming song has vocals in first 8s, previous transition must be at line end
-                # Otherwise, transition can be earlier
-                # This prevents vocal overlap
+                # ECHO TRANSITION: Incoming starts at first chorus end
+                # 3-second echo plays while incoming starts
+                echo_duration = 3.0  # 3 seconds echo
+                incoming_start_sec = last_start_sec + first_chorus_end
                 
-                if to_has_early_vocals:
-                    # Incoming has vocals in first 8s - transition at line end
-                    if to_intro_duration > dynamic_overlap:
-                        incoming_start_offset = dynamic_overlap
-                    else:
-                        incoming_start_offset = to_intro_duration
-                    
-                    overlap_comment = f"Line end transition ({dynamic_overlap:.1f}s, incoming has early vocals)"
-                else:
-                    # No vocals in first 8s - can use full dynamic overlap
-                    incoming_start_offset = dynamic_overlap
-                    overlap_comment = f"Dynamic {dynamic_overlap:.1f}s overlap (no early vocals)"
+                # BPM change happens at echo start
+                bpm_change_point = incoming_start_sec
                 
-                incoming_start_sec = last_start_sec + from_transition_point - incoming_start_offset
-                
-                # BPM change happens 8s before transition
-                bpm_change_point = last_start_sec + from_transition_point - 8.0
-                
-                transition_type = "Transition Overlap"
-                transition_point = from_transition_point
+                transition_type = "echo-transition"
+                transition_point = first_chorus_end
                 incoming_intro = to_intro_duration
                 
                 # Enhanced comment with key info
@@ -407,9 +446,9 @@ def generate_mixing_plan(
                     key_info = f"⚠ Key clash ({from_key}→{to_key})"
                 
                 comment = (
-                    f"{last_track['title']} (BPM {last_track.get('bpm', 120)}) -> {track['title']} "
-                    f"(BPM {track.get('bpm', 120)}). {overlap_comment}. {key_info}. "
-                    f"Transition at {from_transition_point:.1f}s, BPM change at {bpm_change_point - last_start_sec:.1f}s"
+                    f"ECHO TRANSITION: {last_track['title']} (BPM {last_track.get('bpm', 120)}) -> {track['title']} "
+                    f"(BPM {track.get('bpm', 120)}). Echo at first chorus end ({first_chorus_end:.1f}s). "
+                    f"{key_info}. 3s echo + incoming starts simultaneously."
                 )
 
             start_str = format_time(incoming_start_sec)
@@ -421,6 +460,8 @@ def generate_mixing_plan(
                     "incoming_start_sec": incoming_start_sec,
                     "start_time": start_str,
                     "transition_point": transition_point,
+                    "first_chorus_end_sec": first_chorus_end if last_track else None,
+                    "echo_duration_sec": 3.0 if last_track else None,
                     "incoming_intro_duration": incoming_intro,
                     "bpm_change_point_sec": bpm_change_point,
                     "overlap_duration": overlap_duration,

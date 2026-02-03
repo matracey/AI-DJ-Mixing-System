@@ -46,11 +46,12 @@ The system will:
 | --------------------------------------- | ------------------------------------------------------------------------ | -------------------- |
 | **🎤 Natural Language Input**           | Describe your mix requirements in plain English                          | ✅ Fully Implemented |
 | **🎵 Smart Track Selection**            | OpenAI GPT-4o analyzes your library and picks matching songs             | ✅ Fully Implemented |
-| **🎯 Intelligent Transition Detection** | AI finds 3 optimal exit points per song (breakdown, verse end, pre-drop) | ✅ NEW               |
-| **📊 Energy Curve Analysis**            | Detects buildups, drops, and energy transitions for smart mixing         | ✅ NEW               |
-| **🔬 Multi-Factor Transition Scoring**  | 6-factor algorithm (genre, vocals, energy, keys, BPM, type)              | ✅ NEW               |
-| **🎛️ Perfect Beat-Grid Alignment**      | Sample-accurate beat sync with downbeat matching & micro-corrections     | ✅ NEW               |
-| **🌊 Gradual Tempo Sync**               | CDJ-style tempo ramping (32 micro-steps) instead of instant stretch      | ✅ NEW               |
+| **🔊 Echo Transition**                  | 3-second echo fadeout at first chorus end + incoming track starts        | ✅ NEW               |
+| **🎯 Intelligent Transition Detection** | AI finds 3 optimal exit points per song (breakdown, verse end, pre-drop) | ✅ Fully Implemented |
+| **📊 Energy Curve Analysis**            | Detects buildups, drops, and energy transitions for smart mixing         | ✅ Fully Implemented |
+| **🔬 Multi-Factor Transition Scoring**  | 6-factor algorithm (genre, vocals, energy, keys, BPM, type)              | ✅ Fully Implemented |
+| **🎛️ Perfect Beat-Grid Alignment**      | Sample-accurate beat sync with downbeat matching & micro-corrections     | ✅ Fully Implemented |
+| **🌊 Gradual Tempo Sync**               | CDJ-style tempo ramping (32 micro-steps) instead of instant stretch      | ✅ Fully Implemented |
 | **🎼 Harmonic Mixing (Camelot Wheel)**  | Ensures key compatibility between transitions                            | ✅ Fully Implemented |
 | **🎚️ Professional EQ Filtering**        | Progressive Butterworth filters (low-pass/high-pass)                     | ✅ Fully Implemented |
 | **📐 Phrase-Based Transitions**         | Snaps to 8-bar musical boundaries                                        | ✅ Fully Implemented |
@@ -58,7 +59,23 @@ The system will:
 | **⚡ Dynamic Overlap Duration**         | 4-16 second transitions based on context                                 | ✅ Fully Implemented |
 | **💾 Intelligent Caching**              | Stores analysis results in `notes/` for instant re-runs                  | ✅ Fully Implemented |
 | **🎬 OpenAI Whisper Integration**       | Fast vocal/structure detection via API                                   | ✅ Fully Implemented |
-| **📈 Automatic BPM Correction**         | Fixes 2x/0.5x detection errors in slow R&B/Afrobeats                     | ✅ NEW               |
+| **📈 Automatic BPM Correction**         | Fixes 2x/0.5x detection errors in slow R&B/Afrobeats                     | ✅ Fully Implemented |
+
+### Echo Transition (New Default)
+
+The system now uses **echo-transition** as the default mixing style:
+
+1. **First song plays** until the end of its first chorus
+2. **At first chorus end**, a 3-second echo effect is applied (decaying repeats)
+3. **Second song starts** playing simultaneously over the echoing first song
+4. **Echo fades out** while second song continues cleanly
+5. **Repeat** for each song transition
+
+This creates a professional radio-style transition that:
+
+- Gives listeners a satisfying ending to each song's chorus
+- Creates an exciting echo effect during transitions
+- Allows the new song to start fresh without muddy overlaps
 
 ### Professional DJ Improvements
 

@@ -1146,6 +1146,138 @@ def time_stretch_audio(audio: AudioSegment, factor: float):
     y_stretch = librosa.effects.time_stretch(y, rate=rate)
     return np_to_audio_segment(y_stretch, sr=audio.frame_rate)
 
+
+# ================= ECHO EFFECT =================
+def apply_echo_effect(audio: AudioSegment, echo_duration_ms: int = 3000, 
+                      num_echoes: int = 4, decay_factor: float = 0.6):
+    """
+    Apply a decaying echo effect to audio - creates repeating fading echoes.
+    
+    Args:
+        audio: AudioSegment to apply echo to
+        echo_duration_ms: Total duration of the echo tail (default 3 seconds)
+        num_echoes: Number of echo repeats (default 4)
+        decay_factor: Volume multiplier per echo (0.6 = each echo is 60% of previous)
+    
+    Returns: AudioSegment with source audio + echo tail
+    """
+    if len(audio) == 0:
+        return audio
+    
+    # Total output: original audio + echo tail
+    total_duration = len(audio) + echo_duration_ms
+    
+    # Start with original audio fading out, plus silence for echo tail
+    source_fading = audio.fade_out(len(audio))
+    result = source_fading + AudioSegment.silent(echo_duration_ms)
+    
+    # Calculate delay between echoes (spread across echo duration)
+    delay_ms = echo_duration_ms // (num_echoes + 1)
+    
+    # Add each echo - they start AFTER the source ends
+    for i in range(1, num_echoes + 1):
+        # Volume reduction: each echo is decay_factor^i of original
+        volume_multiplier = decay_factor ** i
+        volume_db = 10 * np.log10(volume_multiplier + 1e-10)  # Convert to dB (negative)
+        
+        # Create quieter copy of source
+        echo_audio = audio + volume_db  # pydub uses + for dB adjustment
+        echo_audio = echo_audio.fade_out(len(echo_audio))
+        
+        # Echo starts after source ends, with increasing delay
+        echo_start = len(audio) + (delay_ms * (i - 1))
+        
+        # Create padded echo
+        padded_echo = AudioSegment.silent(echo_start) + echo_audio
+        
+        # Trim or pad to match total duration
+        if len(padded_echo) > total_duration:
+            padded_echo = padded_echo[:total_duration]
+        else:
+            padded_echo = padded_echo + AudioSegment.silent(total_duration - len(padded_echo))
+        
+        # Overlay onto result
+        result = result.overlay(padded_echo)
+    
+    print(f"   🔊 Echo effect: {num_echoes} echoes, {decay_factor:.0%} decay, {echo_duration_ms/1000:.1f}s tail")
+    return result
+
+
+def apply_echo_transition(outgoing_track: AudioSegment, incoming_track: AudioSegment,
+                          first_chorus_end_ms: int, echo_duration_ms: int = 3000,
+                          bpm_from: float = 120, bpm_to: float = 120,
+                          track_names: tuple = ("Outgoing", "Incoming")):
+    """
+    Apply echo transition at the end of first chorus.
+    
+    TRANSITION FLOW:
+    1. Outgoing track plays FULLY until first_chorus_end_ms
+    2. Echo effect plays for 3 seconds (outgoing fades out with echo)
+    3. THEN incoming track starts playing (AFTER the echo, not during)
+    """
+    print(f"   🎵 ECHO TRANSITION at {first_chorus_end_ms/1000:.1f}s")
+    print(f"      Outgoing track length: {len(outgoing_track)/1000:.1f}s")
+    print(f"      Incoming track length: {len(incoming_track)/1000:.1f}s")
+    
+    # Ensure chorus end point is valid
+    if first_chorus_end_ms <= 0 or first_chorus_end_ms > len(outgoing_track):
+        print(f"   ⚠️  Invalid chorus end point, using 60s default")
+        first_chorus_end_ms = min(60000, len(outgoing_track) - echo_duration_ms)
+    
+    # ===== STEP 1: BPM MATCHING =====
+    if bpm_from > 0 and bpm_to > 0 and abs(bpm_from - bpm_to) > 0.5:
+        stretch_factor = bpm_to / bpm_from
+        stretch_factor = np.clip(stretch_factor, 0.95, 1.05)
+        if abs(stretch_factor - 1.0) > 0.005:
+            print(f"   🎛️  BPM match: {bpm_to:.0f} → {bpm_from:.0f} (stretch {stretch_factor:.4f}x)")
+            incoming_track = time_stretch_audio(incoming_track, stretch_factor)
+    
+    # ===== STEP 2: OUTGOING PLAYS FULLY UNTIL CHORUS END =====
+    before_transition = outgoing_track[:first_chorus_end_ms]
+    print(f"      Before transition: {len(before_transition)/1000:.1f}s")
+    
+    # ===== STEP 3: CREATE ECHO SECTION (3 seconds) =====
+    # Take the last 1.5 seconds of the chorus as echo source
+    echo_source_len = min(1500, first_chorus_end_ms)
+    echo_source = outgoing_track[first_chorus_end_ms - echo_source_len : first_chorus_end_ms]
+    
+    # Apply echo effect - creates source + decaying echo tail
+    echo_with_tail = apply_echo_effect(echo_source, echo_duration_ms=echo_duration_ms, num_echoes=4, decay_factor=0.5)
+    
+    # Get just the echo tail (the part after the source audio ends)
+    echo_tail = echo_with_tail[echo_source_len:]
+    
+    # Apply low-pass filter for muffled/distant echo sound
+    echo_tail_filtered = apply_progressive_eq(echo_tail, filter_type="lowpass")
+    
+    # Ensure echo is exactly the right length
+    if len(echo_tail_filtered) > echo_duration_ms:
+        echo_tail_filtered = echo_tail_filtered[:echo_duration_ms]
+    elif len(echo_tail_filtered) < echo_duration_ms:
+        echo_tail_filtered = echo_tail_filtered + AudioSegment.silent(echo_duration_ms - len(echo_tail_filtered))
+    
+    # Add extra fadeout to make it smooth
+    echo_tail_filtered = echo_tail_filtered.fade_out(len(echo_tail_filtered))
+    
+    print(f"      Echo section: {len(echo_tail_filtered)/1000:.1f}s")
+    
+    # ===== STEP 4: INCOMING TRACK STARTS AFTER ECHO =====
+    # Small fade in on incoming for smoothness
+    incoming_with_fade = incoming_track.fade_in(min(500, len(incoming_track)))
+    
+    print(f"      Incoming track: {len(incoming_with_fade)/1000:.1f}s")
+    
+    # ===== STEP 5: FINAL ASSEMBLY =====
+    # Outgoing → Echo (3s) → Incoming (sequential, no overlap)
+    result = before_transition + echo_tail_filtered + incoming_with_fade
+    
+    print(f"   ✅ Echo transition done:")
+    print(f"      Total: {len(result)/1000:.1f}s")
+    print(f"      Outgoing → {first_chorus_end_ms/1000:.1f}s | Echo {echo_duration_ms/1000:.1f}s | THEN Incoming starts")
+    
+    return normalize(result)
+
+
 # ================= TRANSITIONS =================
 def apply_chorus_beatmatch(current_track: AudioSegment, incoming_track: AudioSegment, 
                            chorus_start_ms: int, chorus_end_ms: int, 
@@ -1257,7 +1389,7 @@ def generate_mix(mixing_plan_json: str = "output/mixing_plan.json",
 
     mix = AudioSegment.empty()
     previous_track_audio = None
-    previous_track_start_in_mix = 0
+    previous_track_bpm = 120
     
     # Track mix overview data for visualization
     mix_overview_data = []
@@ -1275,15 +1407,7 @@ def generate_mix(mixing_plan_json: str = "output/mixing_plan.json",
             continue
 
         to_audio = AudioSegment.from_file(to_path)
-        bpm_to = safe_float(to_meta.get("bpm", 0))
-        
-        # FIX ISSUE #3: Detect and trim silence from incoming tracks
-        # Skip for first track (it can have intro), but trim all subsequent tracks
-        if idx > 0:
-            original_length = len(to_audio)
-            to_audio, trim_offset_ms, first_downbeat_ms = detect_first_downbeat_and_trim(to_audio, bpm_to)
-            if trim_offset_ms > 0:
-                print(f"   📍 Track trimmed: {original_length/1000:.1f}s → {len(to_audio)/1000:.1f}s (removed {trim_offset_ms/1000:.1f}s silence)")
+        bpm_to = safe_float(to_meta.get("bpm", 120))
 
         # First track: just add it with fade in
         if idx == 0:
@@ -1291,8 +1415,7 @@ def generate_mix(mixing_plan_json: str = "output/mixing_plan.json",
             print(f"   Track duration: {len(to_audio)/1000:.1f}s")
             mix = to_audio.fade_in(ms(2))
             previous_track_audio = to_audio
-            previous_track_start_in_mix = 0
-            previous_track_bpm = bpm_to  # Store original BPM
+            previous_track_bpm = bpm_to
             
             # Add to mix overview
             mix_overview_data.append({
@@ -1305,140 +1428,86 @@ def generate_mix(mixing_plan_json: str = "output/mixing_plan.json",
 
         # Get transition parameters from mixing plan
         from_title = entry.get("from_track")
+        transition_type = entry.get("transition_type", "echo-transition")
+        
         if not from_title or from_title not in tracks_db:
             print(f"\n  [WARN] from_track missing: {from_title}. Appending with crossfade.")
             mix = mix.append(to_audio, crossfade=2000)
             previous_track_audio = to_audio
-            previous_track_start_in_mix = len(mix) - len(to_audio)
+            previous_track_bpm = bpm_to
             continue
 
         from_meta = tracks_db[from_title]
-        # FIX: Use stored original BPM from previous track (before any stretching)
-        # Don't use from_meta BPM because previous_track_audio may have been stretched
-        bpm_from = previous_track_bpm if 'previous_track_bpm' in locals() else safe_float(from_meta.get("bpm", 0))
-        
-        # NEW STRUCTURE: Get timing from mixing plan
-        transition_point_sec = safe_float(entry.get("transition_point"), 90.0)
-        incoming_intro_sec = safe_float(entry.get("incoming_intro_duration"), 8.0)
-        bpm_change_point_sec = safe_float(entry.get("bpm_change_point_sec"), 82.0)
-        overlap_duration_sec = safe_float(entry.get("overlap_duration"), 8.0)
-        fade_duration_sec = safe_float(entry.get("fade_duration"), 1.0)
-        
-        transition_point_ms = ms(transition_point_sec)
-        overlap_duration_ms = ms(overlap_duration_sec)
-        fade_duration_ms = ms(fade_duration_sec)
+        bpm_from = previous_track_bpm
         
         print(f"\n{idx+1}. → {to_title}")
+        print(f"   Transition type: {transition_type}")
         print(f"   Mix length before: {len(mix)/1000:.1f}s")
-        print(f"   Transition at: {transition_point_sec:.1f}s")
-        print(f"   Incoming intro: {incoming_intro_sec:.1f}s")
-        print(f"   BPM change at: {bpm_change_point_sec:.1f}s")
-        print(f"   Overlap: {overlap_duration_sec:.1f}s, Fade: {fade_duration_sec:.1f}s")
-
-        # Calculate timing positions in the mix
-        transition_point_in_mix = previous_track_start_in_mix + transition_point_ms
-        bpm_change_point_in_mix = previous_track_start_in_mix + ms(bpm_change_point_sec)
         
-        # Calculate when incoming track should start (based on intro duration)
-        if incoming_intro_sec > 8.0:
-            incoming_start_offset_sec = 8.0
+        # === ECHO TRANSITION (Boss's requirement) ===
+        if transition_type == "echo-transition":
+            # Get first chorus end from mixing plan
+            first_chorus_end_sec = safe_float(entry.get("first_chorus_end_sec"), 
+                                              entry.get("transition_point", 60.0))
+            echo_duration_sec = safe_float(entry.get("echo_duration_sec"), 3.0)
+            
+            first_chorus_end_ms = ms(first_chorus_end_sec)
+            echo_duration_ms = ms(echo_duration_sec)
+            
+            print(f"   First chorus end: {first_chorus_end_sec:.1f}s")
+            print(f"   Echo duration: {echo_duration_sec:.1f}s")
+            print(f"   BPM: {bpm_from:.0f} → {bpm_to:.0f}")
+            
+            # Apply echo transition using previous_track_audio
+            if previous_track_audio:
+                # Use apply_echo_transition function with track names for logging
+                track_names = (from_title, to_title)
+                transition_result = apply_echo_transition(
+                    outgoing_track=previous_track_audio,
+                    incoming_track=to_audio,
+                    first_chorus_end_ms=first_chorus_end_ms,
+                    echo_duration_ms=echo_duration_ms,
+                    bpm_from=bpm_from,
+                    bpm_to=bpm_to,
+                    track_names=track_names
+                )
+                
+                # The mix is built incrementally:
+                # - Previous mix content (before this track's outgoing portion)
+                # - New transition result replaces the outgoing track with transition
+                
+                # Find where previous track started in the mix
+                # and replace from there with the new transition
+                previous_track_start = len(mix) - len(previous_track_audio)
+                
+                # Keep everything before the previous track
+                mix_before_previous = mix[:max(0, previous_track_start)]
+                
+                # Add the transition result (which includes outgoing->echo->incoming)
+                mix = mix_before_previous + transition_result
+                
+                # Track where incoming starts for next iteration
+                incoming_start_in_mix = previous_track_start + first_chorus_end_ms
+                
+                # Add to mix overview
+                mix_overview_data.append({
+                    'name': to_title,
+                    'start_ms': incoming_start_in_mix,
+                    'duration_ms': len(to_audio),
+                    'bpm': bpm_to
+                })
+            else:
+                # Fallback: just append with crossfade
+                print("   [WARN] No previous track audio, using crossfade fallback")
+                mix = mix.append(to_audio, crossfade=2000)
         else:
-            incoming_start_offset_sec = incoming_intro_sec
-        
-        incoming_start_in_mix = transition_point_in_mix - ms(incoming_start_offset_sec)
-        
-        print(f"   Incoming starts at: {incoming_start_in_mix/1000:.1f}s in mix")
-        print(f"   Transition point: {transition_point_in_mix/1000:.1f}s in mix")
-        
-        # NOTE: Tempo sync is now handled inside align_beats_perfect()
-        # The old gradual_tempo_sync code has been removed to prevent double-syncing
-        
-        # STEP 1: PERFECT BEAT-GRID ALIGNMENT for incoming track
-        # Get a section from previous track at transition point for beat matching
-        if previous_track_audio:
-            match_section_start = max(0, transition_point_ms - 5000)
-            match_section_end = min(transition_point_ms + overlap_duration_ms + 5000, len(previous_track_audio))
-            match_section = previous_track_audio[match_section_start:match_section_end]
-            
-            # Get incoming section for alignment (overlap duration + buffer)
-            incoming_alignment_section = to_audio[:min(overlap_duration_ms + 10000, len(to_audio))]
-            
-            # Apply perfect beat-to-beat alignment (with visualization)
-            track_names = (from_title, to_title)
-            aligned_incoming, shift_ms = align_beats_perfect(
-                match_section, 
-                incoming_alignment_section, 
-                overlap_duration_ms, 
-                bpm_from, 
-                bpm_to,
-                track_names=track_names
-            )
-            
-            # Update the full incoming track with aligned version
-            if len(aligned_incoming) > 0:
-                remainder = to_audio[len(incoming_alignment_section):]
-                to_audio = aligned_incoming + remainder
-            
-            if abs(shift_ms) > 50:
-                print(f"   ✅ Perfect beat alignment: {shift_ms:.1f}ms initial shift + grid warping")
-        
-        # STEP 3: Overlay incoming track starting at calculated position
-        # Pad incoming to start at the right position in the mix
-        incoming_padded = AudioSegment.silent(incoming_start_in_mix) + to_audio
-        
-        # STEP 4: Create the overlap section (8 seconds at transition point)
-        overlap_end_in_mix = transition_point_in_mix + overlap_duration_ms
-        
-        # Keep mix up to where overlap starts
-        mix_before_overlap = mix[:transition_point_in_mix]
-        
-        # Get the overlap section from previous track (8 seconds after transition)
-        overlap_from_previous = mix[transition_point_in_mix:overlap_end_in_mix]
-        
-        # Get corresponding section from incoming track
-        incoming_at_transition = incoming_start_in_mix
-        overlap_start_in_incoming = transition_point_in_mix - incoming_at_transition
-        overlap_from_incoming = to_audio[int(overlap_start_in_incoming):int(overlap_start_in_incoming + overlap_duration_ms)]
-        
-        # Overlay both tracks during overlap
-        overlapped_section = overlap_from_previous.overlay(overlap_from_incoming)
-        
-        # STEP 5: Fade out previous track during last 1 second of overlap
-        fade_start_in_mix = overlap_end_in_mix - fade_duration_ms
-        
-        # Split overlapped section into non-fade and fade parts
-        non_fade_duration_ms = overlap_duration_ms - fade_duration_ms
-        overlap_before_fade = overlapped_section[:int(non_fade_duration_ms)]
-        overlap_with_fade = overlapped_section[int(non_fade_duration_ms):]
-        
-        # Get incoming audio during fade (no fade on incoming)
-        fade_start_in_incoming = int(overlap_start_in_incoming + non_fade_duration_ms)
-        incoming_during_fade = to_audio[fade_start_in_incoming:fade_start_in_incoming + int(fade_duration_ms)]
-        
-        # Fade out previous from the overlapped section, keep incoming clear
-        # Apply fade to the previous track component only
-        previous_during_fade = overlap_with_fade.fade_out(int(fade_duration_ms))
-        faded_section = incoming_during_fade.overlay(previous_during_fade)
-        
-        # STEP 6: Continue with incoming track only after overlap
-        remaining_incoming_start = int(overlap_start_in_incoming + overlap_duration_ms)
-        remaining_incoming = to_audio[remaining_incoming_start:]
-        
-        # STEP 7: Combine all sections
-        mix = mix_before_overlap + overlap_before_fade + faded_section + remaining_incoming
+            # Fallback for other transition types (legacy support)
+            print(f"   [INFO] Using crossfade for transition type: {transition_type}")
+            mix = mix.append(to_audio, crossfade=3000)
         
         # Update tracking variables
         previous_track_audio = to_audio
-        previous_track_start_in_mix = incoming_start_in_mix
-        previous_track_bpm = bpm_to  # Store ORIGINAL BPM (before any stretching)
-        
-        # Add to mix overview
-        mix_overview_data.append({
-            'name': to_title,
-            'start_ms': incoming_start_in_mix,
-            'duration_ms': len(to_audio),
-            'bpm': bpm_to
-        })
+        previous_track_bpm = bpm_to
         
         print(f"   Mix length after: {len(mix)/1000:.1f}s")
 
@@ -1454,7 +1523,7 @@ def generate_mix(mixing_plan_json: str = "output/mixing_plan.json",
     print("Normalizing & exporting final mix...")
     final_mix = normalize(mix)
     final_mix.export(output_path, format="mp3", bitrate="320k",
-                     tags={"artist":"AI DJ","title":"Full-Auto Chorus Mix"})
+                     tags={"artist":"AI DJ","title":"Echo Transition Mix"})
     print(f"✅ MIX READY → {output_path} ({len(final_mix)/60000:.1f} minutes)")
     print("="*60)
 

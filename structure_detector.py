@@ -292,8 +292,9 @@ def ask_gpt4o_for_transition_point_fast(segments, beats_str, title, artist, dura
     
     for seg in segments[:20]:  # Only first 20 segments (~first 2 minutes)
         start = seg.get("start", 0)
+        end = seg.get("end", start + 2)
         text = seg.get("text", "").strip()
-        lyrics_formatted.append(f"[{start:.1f}s] {text}")
+        lyrics_formatted.append(f"[{start:.1f}s - {end:.1f}s] {text}")
         
         # Check if there are vocals in first 8 seconds
         if start < 8.0 and text and len(text) > 10:  # Meaningful lyrics
@@ -309,51 +310,26 @@ def ask_gpt4o_for_transition_point_fast(segments, beats_str, title, artist, dura
     
     lyrics_text = "\n".join(lyrics_formatted)
     
-    prompt = f"""You are a professional DJ. Find the 3 BEST transition points for mixing out of this song.
+    prompt = f"""Song: "{title}" by {artist}
 
-Song: "{title}" by {artist}
-Duration: {duration:.0f}s
-
-Lyrics with segment timestamps:
+Here are the lyrics with timestamps:
 {lyrics_text}
 
-Beat timestamps (first 100 beats): [{beats_str}]
+TASK: Find the FIRST CHORUS of this song.
 
-FIND 3 TRANSITION CANDIDATES between 50-120 seconds:
+The chorus is the catchy, repeated hook part that comes after the intro and first verse. It's usually the most memorable part with repeated lyrics.
 
-TRANSITION TYPES:
-1. "verse_end" - End of verse (vocals pause, natural break)
-2. "chorus_end" - End of chorus (high energy exit)
-3. "breakdown_start" - Start of instrumental/breakdown (no vocals, best for beat-sync)
-4. "pre_drop" - Just before a drop/climax (energy building)
-
-For EACH candidate:
-- Exact timestamp (align to beat)
-- Type (verse_end/chorus_end/breakdown_start/pre_drop)
-- Are there vocals in the 8 seconds AFTER this point?
-- Energy level (low/medium/high/building/dropping)
-- Why this is a good transition point
-
-ALSO PROVIDE:
-- has_vocals_in_first_8s: Are there vocals in first 8 seconds?
-- intro_duration_sec: Time when AUDIBLE MUSIC starts (NOT silence). This is when a DJ should START playing this track. Find where drums/bass/melody BEGIN (0-20s). Default: 0.5s if music starts immediately.
-- recommended_transition: Which of the 3 candidates is best?
+STEP 1: Identify which lines are the FIRST CHORUS
+STEP 2: Find the LAST LINE of that first chorus  
+STEP 3: Give me the END timestamp of that last line
 
 Return JSON:
 {{
-  "has_vocals_in_first_8s": <boolean>,
-  "intro_duration_sec": <float 0-20>,  // When audible music STARTS (not silence)
-  "transition_candidates": [
-    {{
-      "time": <float 50-120>,
-      "type": "verse_end|chorus_end|breakdown_start|pre_drop",
-      "has_vocals_after": <boolean>,
-      "energy": "low|medium|high|building|dropping",
-      "reasoning": "<why good transition>"
-    }},
-    ... (2 more)
-  ],
-  "recommended_transition": <float - best candidate time>
+  "first_chorus_lines": ["line 1", "line 2", ...],
+  "last_chorus_line": "<the final line of the first chorus>",
+  "chorus_end_time": <END timestamp of the last chorus line - this is where we echo out>,
+  "has_vocals_in_first_8s": <true if singing starts before 8 seconds>,
+  "intro_duration_sec": <when does first vocal start>
 }}"""
     
     client_local = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
@@ -375,8 +351,23 @@ Return JSON:
         result["intro_duration_sec"] = max(first_meaningful_audio_time, 0.5)
         print(f"  → Corrected intro_duration to {result['intro_duration_sec']:.2f}s (actual audio start)")
     
-    # Ensure we have transition candidates
-    if "transition_candidates" not in result:
+    # NEW SIMPLE FORMAT: Use chorus_end_time directly
+    if "chorus_end_time" in result:
+        chorus_end = float(result["chorus_end_time"])
+        print(f"  → First chorus ends at {chorus_end:.1f}s")
+        print(f"  → Last chorus line: {result.get('last_chorus_line', 'unknown')}")
+        
+        # Create transition candidates for backward compatibility
+        result["transition_candidates"] = [{
+            "time": chorus_end,
+            "type": "chorus_end",
+            "has_vocals_after": True,
+            "energy": "medium",
+            "reasoning": f"End of first chorus: {result.get('last_chorus_line', '')}"
+        }]
+        result["recommended_transition"] = chorus_end
+        result["transition_point"] = chorus_end
+    elif "transition_candidates" not in result:
         # Fallback: create single candidate from old format
         result["transition_candidates"] = [{
             "time": result.get("transition_point_sec", 70.0),
@@ -386,9 +377,11 @@ Return JSON:
             "reasoning": "Fallback transition point"
         }]
         result["recommended_transition"] = result.get("transition_point_sec", 70.0)
+        result["transition_point"] = result.get("recommended_transition", 70.0)
+    else:
+        # Maintain backward compatibility for old format
+        result["transition_point"] = result.get("recommended_transition", 70.0)
     
-    # Maintain backward compatibility
-    result["transition_point"] = result.get("recommended_transition", 70.0)
     result["intro_duration"] = result.get("intro_duration_sec", 8.0)
     
     return result
