@@ -107,7 +107,55 @@ def calculate_key_compatibility(key1: str, key2: str) -> float:
     return -1.0  # Key clash - will sound bad
 
 
-def find_first_chorus_end(track: dict) -> float:
+ELECTRONIC_GENRES = (
+    "edm", "electronic", "house", "techno", "trance", "progressive",
+    "electro", "dance", "drum and bass", "dnb", "dubstep", "deep house",
+    "tech house",
+)
+
+
+def is_electronic_genre(genre: str) -> bool:
+    """True if the genre is an electronic/dance style suited to a long blend."""
+    g = (genre or "").lower()
+    return any(tag in g for tag in ELECTRONIC_GENRES)
+
+
+def tempo_bridge(bpm_from: float, bpm_to: float):
+    """Pick the half/double-time multiple of bpm_to closest to bpm_from.
+
+    DJs treat a 64 BPM track as mixable with a 128 BPM track by playing it at
+    double time. Returns (effective_to_bpm, stretch_ratio) where stretch_ratio
+    is how much the incoming track must be stretched (applied to bpm_to's audio)
+    to match bpm_from. A ratio of 1.0 means no change.
+    """
+    if not bpm_from or not bpm_to or bpm_from <= 0 or bpm_to <= 0:
+        return (bpm_to, 1.0)
+
+    best_eff, best_ratio, best_dist = bpm_to, 1.0, float("inf")
+    for factor in (0.5, 1.0, 2.0):
+        eff = bpm_to * factor
+        ratio = bpm_from / eff  # stretch incoming so eff -> bpm_from
+        dist = abs(eff - bpm_from)
+        if dist < best_dist:
+            best_eff, best_ratio, best_dist = eff, ratio, dist
+    return (best_eff, best_ratio)
+
+
+def is_mixable(from_track: dict, to_track: dict, max_stretch: float = 0.12):
+    """True if two tracks can be beatmatched within max_stretch and aren't a key clash.
+
+    Uses the half/double-time bridge so e.g. 64 vs 128 counts as mixable.
+    """
+    bpm_from = from_track.get("bpm", 0)
+    bpm_to = to_track.get("bpm", 0)
+    _, ratio = tempo_bridge(bpm_from, bpm_to)
+    if abs(ratio - 1.0) > max_stretch:
+        return False
+    key_score = calculate_key_compatibility(from_track.get("key", ""), to_track.get("key", ""))
+    return key_score >= 0
+
+
+
     """
     Find the END of the FIRST CHORUS - where to echo out.
     
@@ -414,47 +462,83 @@ def generate_mixing_plan(
                 bpm_change_point = None
                 comment = f"Start with {track['title']} (BPM {track.get('bpm', 'N/A')})"
             else:
-                print(f"  Analyzing echo transition: {last_track['title']} → {track['title']}")
-
-                # ECHO TRANSITION: play the outgoing track until near its END,
-                # then echo out into the incoming track. The legacy behaviour cut
-                # the outgoing track at its first chorus (~60s), which on long
-                # electronic tracks chopped the song off before the drop. We now
-                # transition near the end so the body of the track is actually heard.
-                echo_duration = 3.0  # 3 seconds echo
-                outro_lead = max(overlap_duration, echo_duration)
-                mix_out_point = max(1.0, last_duration_sec - outro_lead)
-                first_chorus_end = mix_out_point
-                print(f"    → Outgoing plays to {mix_out_point:.1f}s of {last_duration_sec:.1f}s, then echoes out")
+                print(f"  Analyzing transition: {last_track['title']} → {track['title']}")
 
                 to_intro_duration = track.get("intro_duration", 8.0)
-
-                # Check key compatibility
                 from_key = last_track.get("key", "")
                 to_key = track.get("key", "")
                 key_score = calculate_key_compatibility(from_key, to_key)
 
-                incoming_start_sec = last_start_sec + first_chorus_end
-                
-                # BPM change happens at echo start
-                bpm_change_point = incoming_start_sec
-                
-                transition_type = "echo-transition"
-                transition_point = first_chorus_end
-                incoming_intro = to_intro_duration
-                
-                # Enhanced comment with key info
-                key_info = ""
-                if key_score >= 1.0:
-                    key_info = f"✓ Keys match ({from_key}→{to_key})"
-                elif key_score < 0:
-                    key_info = f"⚠ Key clash ({from_key}→{to_key})"
-                
-                comment = (
-                    f"ECHO TRANSITION: {last_track['title']} (BPM {last_track.get('bpm', 120)}) -> {track['title']} "
-                    f"(BPM {track.get('bpm', 120)}). Echo at first chorus end ({first_chorus_end:.1f}s). "
-                    f"{key_info}. 3s echo + incoming starts simultaneously."
+                from_bpm = last_track.get("bpm", 120)
+                to_bpm = track.get("bpm", 120)
+
+                # Decide transition type: a true DJ "long blend" for electronic,
+                # beatmatchable, harmonically-OK pairs; otherwise the echo cut.
+                use_long_blend = (
+                    is_electronic_genre(last_track.get("genre", ""))
+                    and is_electronic_genre(track.get("genre", ""))
+                    and is_mixable(last_track, track)
                 )
+
+                if use_long_blend:
+                    # 32-bar overlap derived from the outgoing tempo (4 beats/bar),
+                    # clamped to a musical 24-80s range.
+                    bars = 32
+                    overlap_duration = (bars * 4 * 60.0) / max(from_bpm, 1)
+                    overlap_duration = max(24.0, min(80.0, overlap_duration))
+
+                    # Outgoing plays solo until duration - overlap, then both
+                    # tracks overlap for `overlap_duration`, then incoming continues.
+                    mix_out_point = max(1.0, last_duration_sec - overlap_duration)
+                    incoming_start_sec = last_start_sec + mix_out_point
+
+                    eff_bpm, tempo_ratio = tempo_bridge(from_bpm, to_bpm)
+                    bass_swap_offset = overlap_duration / 2.0  # midpoint of the overlap
+
+                    transition_type = "long-blend"
+                    transition_point = mix_out_point
+                    first_chorus_end = mix_out_point
+                    incoming_intro = to_intro_duration
+                    bpm_change_point = incoming_start_sec
+                    echo_for_plan = None
+
+                    key_info = (f"✓ Keys match ({from_key}→{to_key})" if key_score >= 1.0
+                                else (f"⚠ Key clash ({from_key}→{to_key})" if key_score < 0 else ""))
+                    print(f"    → Long blend: {overlap_duration:.1f}s overlap, "
+                          f"bass swap at +{bass_swap_offset:.1f}s, tempo x{tempo_ratio:.3f}")
+                    comment = (
+                        f"LONG BLEND: {last_track['title']} (BPM {from_bpm}) -> {track['title']} "
+                        f"(BPM {to_bpm}). {overlap_duration:.0f}s (32-bar) overlap, bass swap at "
+                        f"overlap midpoint. {key_info}."
+                    )
+                else:
+                    # ECHO TRANSITION: play the outgoing track until near its END,
+                    # then echo out into the incoming track.
+                    echo_duration = 3.0  # 3 seconds echo
+                    outro_lead = max(overlap_duration, echo_duration)
+                    mix_out_point = max(1.0, last_duration_sec - outro_lead)
+                    first_chorus_end = mix_out_point
+                    print(f"    → Outgoing plays to {mix_out_point:.1f}s of {last_duration_sec:.1f}s, then echoes out")
+
+                    incoming_start_sec = last_start_sec + first_chorus_end
+                    bpm_change_point = incoming_start_sec
+                    transition_type = "echo-transition"
+                    transition_point = first_chorus_end
+                    incoming_intro = to_intro_duration
+                    tempo_ratio = 1.0
+                    bass_swap_offset = None
+                    echo_for_plan = 3.0
+
+                    key_info = ""
+                    if key_score >= 1.0:
+                        key_info = f"✓ Keys match ({from_key}→{to_key})"
+                    elif key_score < 0:
+                        key_info = f"⚠ Key clash ({from_key}→{to_key})"
+                    comment = (
+                        f"ECHO TRANSITION: {last_track['title']} (BPM {from_bpm}) -> {track['title']} "
+                        f"(BPM {to_bpm}). Echo at first chorus end ({first_chorus_end:.1f}s). "
+                        f"{key_info}. 3s echo + incoming starts simultaneously."
+                    )
 
             start_str = format_time(incoming_start_sec)
 
@@ -466,12 +550,14 @@ def generate_mixing_plan(
                     "start_time": start_str,
                     "transition_point": transition_point,
                     "first_chorus_end_sec": first_chorus_end if last_track else None,
-                    "echo_duration_sec": 3.0 if last_track else None,
+                    "echo_duration_sec": (echo_for_plan if last_track else None),
                     "incoming_intro_duration": incoming_intro,
                     "bpm_change_point_sec": bpm_change_point,
                     "overlap_duration": overlap_duration,
                     "fade_duration": fade_duration,
                     "transition_type": transition_type,
+                    "tempo_ratio": (tempo_ratio if last_track else None),
+                    "bass_swap_offset_sec": (bass_swap_offset if last_track else None),
                     "to_bpm": track.get("bpm", 120),
                     "from_bpm": last_track.get("bpm", 120) if last_track else None,
                     "comment": comment,
