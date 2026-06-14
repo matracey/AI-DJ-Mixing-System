@@ -388,7 +388,7 @@ Return JSON:
     
     client_local = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
     response = client_local.chat.completions.create(
-        model="gpt-4o-mini",
+        model="gpt-5-nano",
         messages=[{"role": "user", "content": prompt}],
         temperature=0.1
     )
@@ -461,7 +461,7 @@ def analyze_structure_fast(title, artist, filename, bpm, SONGS_DIR="./songs"):
     - Uses OpenAI Whisper API (no local model loading)
     - Only processes first 90s of audio
     - Uses segment-level timestamps (not word-level)
-    - Uses gpt-4o-mini for speed
+    - Uses gpt-5-nano for speed
     - Caches results in notes/ folder for reuse
     """
     # Check cache first
@@ -490,7 +490,7 @@ def analyze_structure_fast(title, artist, filename, bpm, SONGS_DIR="./songs"):
         beats, tempo, phrase_boundaries = extract_beat_times_fast(file_path, max_duration=90)
         beats_str = ", ".join(f"{t:.1f}" for t in beats[:100])  # Only first 100 beats
         
-        # Step 3: Fast GPT analysis (gpt-4o-mini, segment-level only)
+        # Step 3: Fast GPT analysis (gpt-5-nano, segment-level only)
         # Instrumental fallback: if there are no segments or no transcribed text,
         # skip the GPT call entirely and synthesize a transition from the energy curve.
         if not segments or not (transcript.get("text", "") or "").strip():

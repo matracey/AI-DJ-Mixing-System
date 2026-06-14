@@ -201,7 +201,7 @@ def get_genre(title, artist):
     """
     try:
         response = client.chat.completions.create(
-            model="gpt-4o-mini",
+            model="gpt-5-nano",
             messages=[
                 {"role": "system", "content": "You are a music metadata expert. Respond ONLY with the primary genre (e.g., R&B) from reliable sources. No explanation, no extra text."},
                 {"role": "user", "content": f"What is the primary genre of '{title}' by '{artist}'?"}
@@ -224,7 +224,7 @@ def estimate_key(title, artist):
     """
     try:
         response = client.chat.completions.create(
-            model="gpt-4o-mini",
+            model="gpt-5-nano",
             messages=[
                 {"role": "system", "content": "You are a music metadata expert. Respond ONLY with 'Key: C Scale: major' format from reliable sources like Tunebat. No extra text."},
                 {"role": "user", "content": f"What is the key and scale of '{title}' by '{artist}'?"}
