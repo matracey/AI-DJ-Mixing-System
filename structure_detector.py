@@ -491,7 +491,37 @@ def analyze_structure_fast(title, artist, filename, bpm, SONGS_DIR="./songs"):
         beats_str = ", ".join(f"{t:.1f}" for t in beats[:100])  # Only first 100 beats
         
         # Step 3: Fast GPT analysis (gpt-4o-mini, segment-level only)
-        result = ask_gpt4o_for_transition_point_fast(segments, beats_str, title, artist, duration)
+        # Instrumental fallback: if there are no segments or no transcribed text,
+        # skip the GPT call entirely and synthesize a transition from the energy curve.
+        if not segments or not (transcript.get("text", "") or "").strip():
+            print("  No vocals detected - using energy-curve instrumental fallback")
+            energy_fallback = analyze_energy_curve(file_path, max_duration=180)
+
+            transition_sec = None
+            for b in energy_fallback.get("buildups", []):
+                if b.get("time", 0) > 32:
+                    transition_sec = float(b.get("peak_time"))
+                    break
+            if transition_sec is None:
+                for d in energy_fallback.get("drops", []):
+                    if d.get("time", 0) > 32:
+                        transition_sec = float(d.get("time"))
+                        break
+            if transition_sec is None:
+                transition_sec = 64.0
+
+            result = {
+                "transition_point_sec": transition_sec,
+                "recommended_transition": transition_sec,
+                "transition_point": transition_sec,
+                "intro_duration_sec": 8.0,
+                "has_vocals_in_first_8s": False,
+                "transition_is_line_end": False,
+                "transition_candidates": [{"time": transition_sec, "reason": "energy_curve"}],
+                "energy_analysis": energy_fallback,
+            }
+        else:
+            result = ask_gpt4o_for_transition_point_fast(segments, beats_str, title, artist, duration)
         
         # Step 3.5: Add energy curve analysis
         print("  Analyzing energy curve...")
