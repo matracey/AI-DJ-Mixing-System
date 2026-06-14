@@ -12,6 +12,7 @@ Features:
 import os
 import json
 from dotenv import load_dotenv
+from ai_dj_tags import read_artist_title
 try:
     from openai_compat import OpenAI
 except Exception:
@@ -116,19 +117,8 @@ def get_available_songs():
         if not filename.lower().endswith((".mp3", ".flac", ".m4a", ".wav", ".ogg")):
             continue
             
-        # Clean filename
-        clean_name = filename[:-4]
-        if clean_name.startswith("[iSongs.info] "):
-            clean_name = clean_name.replace("[iSongs.info] ", "")
-        
-        # Parse artist - title
-        parts = clean_name.split(" - ", 1)
-        if len(parts) == 2:
-            artist = parts[0].strip()
-            title = parts[1].strip()
-        else:
-            artist = "Unknown"
-            title = clean_name.strip()
+        # Parse artist - title from tags (fallback to filename)
+        artist, title = read_artist_title(os.path.join(SONGS_DIR, filename))
         
         songs.append({
             "title": title,
