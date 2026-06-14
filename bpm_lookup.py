@@ -73,6 +73,43 @@ def save_cached_metadata(filename, metadata):
         print(f"  ⚠ Cache write failed: {e}")
 
 
+def _estimate_tempo_robust(y, sr):
+    """Estimate tempo from the body of a track with metrical correction.
+
+    Uses a tempogram-based global estimate (librosa.feature.tempo) on a window
+    offset past any quiet intro, which avoids the 3/4- and half-time mis-locks
+    that librosa.beat.beat_track produces on tracks with long buildups. Any
+    obvious metrical error (0.5x / 0.75x / 1.5x / 2x) is folded into a
+    preferred 90-180 BPM range.
+    """
+    total = len(y)
+    # Analyse the body of the track, skipping the first ~25% (intro/buildup),
+    # capped so we still have a decent window on short clips.
+    offset = int(total * 0.25)
+    window = total - offset
+    if window < sr * 20:  # fall back to the whole signal if too short
+        offset, window = 0, total
+    yb = y[offset:offset + window]
+
+    onset_env = librosa.onset.onset_strength(y=yb, sr=sr)
+    tempo = float(np.atleast_1d(librosa.feature.tempo(onset_envelope=onset_env, sr=sr))[0])
+
+    if tempo <= 0:
+        return tempo
+
+    # Fold common metrical errors into a preferred range.
+    for factor in (2.0, 1.5, 1.0, 0.75, 0.5):
+        candidate = tempo * factor
+        if 90.0 <= candidate <= 180.0:
+            return candidate
+    # Nothing landed in range; bring it into 90-180 by octave folding.
+    while tempo < 90.0:
+        tempo *= 2.0
+    while tempo > 180.0:
+        tempo /= 2.0
+    return tempo
+
+
 def estimate_bpm_with_librosa(audio_path):
     """
     Fallback BPM estimation using librosa beat tracking.
@@ -89,10 +126,8 @@ def estimate_bpm_with_librosa(audio_path):
         # Load audio
         y, sr = librosa.load(audio_path, sr=22050, duration=120)  # Load first 2 minutes
         
-        # Use beat tracking to estimate tempo
-        tempo, beats = librosa.beat.beat_track(y=y, sr=sr)
-        # librosa 0.10 returns tempo as a numpy.ndarray; coerce to scalar
-        tempo = float(np.asarray(tempo).flatten()[0])
+        # Robust tempo estimate from the track body (avoids intro mis-locks)
+        tempo = _estimate_tempo_robust(y, sr)
         
         # tempo is returned as float, convert to int
         bpm = int(round(tempo))
