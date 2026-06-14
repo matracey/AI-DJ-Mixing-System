@@ -28,6 +28,13 @@ Outputs:
 - Final mix.mp3
 """
 
+import sys
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
+
 import os
 import logging
 from dotenv import load_dotenv
