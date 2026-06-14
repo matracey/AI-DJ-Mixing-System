@@ -389,6 +389,7 @@ def generate_mixing_plan(
         mixing_plan = []
         last_start_sec = 0.0
         last_track = None
+        last_duration_sec = 0.0
 
         for idx, track in enumerate(all_tracks):
             file_path = os.path.join(SONGS_DIR, track["file"])
@@ -413,22 +414,26 @@ def generate_mixing_plan(
                 bpm_change_point = None
                 comment = f"Start with {track['title']} (BPM {track.get('bpm', 'N/A')})"
             else:
-                # === ECHO TRANSITION: Find first chorus end ===
                 print(f"  Analyzing echo transition: {last_track['title']} → {track['title']}")
-                
-                # Find first_chorus_end from transition_candidates
-                first_chorus_end = find_first_chorus_end(last_track)
-                
+
+                # ECHO TRANSITION: play the outgoing track until near its END,
+                # then echo out into the incoming track. The legacy behaviour cut
+                # the outgoing track at its first chorus (~60s), which on long
+                # electronic tracks chopped the song off before the drop. We now
+                # transition near the end so the body of the track is actually heard.
+                echo_duration = 3.0  # 3 seconds echo
+                outro_lead = max(overlap_duration, echo_duration)
+                mix_out_point = max(1.0, last_duration_sec - outro_lead)
+                first_chorus_end = mix_out_point
+                print(f"    → Outgoing plays to {mix_out_point:.1f}s of {last_duration_sec:.1f}s, then echoes out")
+
                 to_intro_duration = track.get("intro_duration", 8.0)
-                
+
                 # Check key compatibility
                 from_key = last_track.get("key", "")
                 to_key = track.get("key", "")
                 key_score = calculate_key_compatibility(from_key, to_key)
-                
-                # ECHO TRANSITION: Incoming starts at first chorus end
-                # 3-second echo plays while incoming starts
-                echo_duration = 3.0  # 3 seconds echo
+
                 incoming_start_sec = last_start_sec + first_chorus_end
                 
                 # BPM change happens at echo start
@@ -475,6 +480,7 @@ def generate_mixing_plan(
 
             last_start_sec = incoming_start_sec
             last_track = track
+            last_duration_sec = duration_sec
 
         with open(output_path, "w") as f:
             json.dump({"mixing_plan": mixing_plan}, f, indent=2)
