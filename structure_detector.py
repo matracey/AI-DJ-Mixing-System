@@ -12,6 +12,7 @@ SPEED OPTIMIZATIONS:
 
 import os
 import json
+import re
 import numpy as np
 import scipy.signal
 from dotenv import load_dotenv
@@ -392,7 +393,21 @@ Return JSON:
         temperature=0.1
     )
     
-    result = json.loads(clean_json_output(response.choices[0].message.content))
+    raw = response.choices[0].message.content or ""
+    clean = clean_json_output(raw)
+    try:
+        result = json.loads(clean)
+    except Exception:
+        match = re.search(r"\{.*\}", clean, re.DOTALL)
+        if match:
+            try:
+                result = json.loads(match.group(0))
+            except Exception:
+                print(f"WARN: could not parse GPT JSON response: {raw[:200]}")
+                result = {}
+        else:
+            print(f"WARN: could not parse GPT JSON response: {raw[:200]}")
+            result = {}
     
     # Add Python-detected early vocals as backup
     if "has_vocals_in_first_8s" not in result:
