@@ -1365,6 +1365,84 @@ def apply_chorus_beatmatch(current_track: AudioSegment, incoming_track: AudioSeg
     
     return normalize(result)
 
+def match_gain(segment: AudioSegment, target_dbfs: float):
+    """Scale a segment so its perceived loudness matches target_dbfs."""
+    if segment.dBFS == float("-inf"):
+        return segment
+    return segment.apply_gain(target_dbfs - segment.dBFS)
+
+
+def apply_long_blend(outgoing_track: AudioSegment, incoming_track: AudioSegment,
+                     overlap_ms: int, bass_swap_offset_ms: int, tempo_ratio: float,
+                     bpm_from: float, bpm_to: float, track_names=None):
+    """Professional EDM "long blend" between two tracks.
+
+    1. Beatmatch the incoming track to the outgoing tempo (full-range via the
+       planner's tempo_ratio, clamped to +/-12%).
+    2. Outgoing plays solo until duration - overlap, then both tracks overlap
+       for `overlap_ms` (a ~32-bar blend).
+    3. During the first half of the overlap the incoming track is high-passed
+       (no bass) and woven in over the outgoing groove.
+    4. At `bass_swap_offset_ms` the bass swaps: outgoing is high-passed (bass
+       removed) and faded, while the incoming track brings in full bass.
+    5. Incoming continues solo afterwards.
+    """
+    from_name, to_name = (track_names or ("outgoing", "incoming"))
+    print(f"   🎚️  LONG BLEND {from_name} → {to_name}: {overlap_ms/1000:.1f}s overlap, "
+          f"bass swap at +{bass_swap_offset_ms/1000:.1f}s")
+
+    # --- 1. Beatmatch incoming to outgoing tempo ---
+    if tempo_ratio and tempo_ratio > 0:
+        stretch_factor = 1.0 / tempo_ratio  # time_stretch_audio uses incoming/outgoing convention
+    else:
+        stretch_factor = safe_float(bpm_to / bpm_from, 1.0) if bpm_from else 1.0
+    stretch_factor = float(np.clip(stretch_factor, 0.88, 1.12))
+    if abs(stretch_factor - 1.0) > 0.005:
+        print(f"   🎛️  Beatmatch stretch {stretch_factor:.4f}x ({bpm_to:.0f}→{bpm_from:.0f} BPM)")
+        incoming_track = time_stretch_audio(incoming_track, stretch_factor)
+
+    # Clamp overlap to what both tracks can supply.
+    overlap_ms = int(min(overlap_ms, len(outgoing_track) - 1000, len(incoming_track) - 1000))
+    overlap_ms = max(overlap_ms, 4000)
+    swap_ms = int(min(max(bass_swap_offset_ms, 1000), overlap_ms - 1000))
+
+    # --- 2. Section the audio ---
+    mix_out_ms = max(0, len(outgoing_track) - overlap_ms)
+    before = outgoing_track[:mix_out_ms]
+    out_overlap = outgoing_track[mix_out_ms:mix_out_ms + overlap_ms]
+    in_overlap = incoming_track[:overlap_ms]
+    in_rest = incoming_track[overlap_ms:]
+
+    # --- gain match incoming to outgoing for the overlap, with headroom ---
+    # Attenuate both sides so the overlay sum doesn't clip.
+    in_overlap = match_gain(in_overlap, out_overlap.dBFS).apply_gain(-4.5)
+    out_overlap = out_overlap.apply_gain(-4.5)
+
+    # --- 3/4. Bass swap split ---
+    out_pre = out_overlap[:swap_ms]
+    out_post = out_overlap[swap_ms:]
+    in_pre = in_overlap[:swap_ms]
+    in_post = in_overlap[swap_ms:]
+
+    # Before swap: incoming has no bass (high-pass), woven in with a fade-in;
+    # outgoing keeps its full bass/groove.
+    in_pre_hp = apply_highpass_filter(in_pre, cutoff_hz=250).fade_in(min(len(in_pre), 4000))
+    overlap_pre = out_pre.overlay(in_pre_hp)
+
+    # After swap: hand the groove over to the incoming track. The outgoing track
+    # fades out full-range (keeping its bass) so it covers any gap while the
+    # incoming track's intro/buildup is still bass-light, then disappears.
+    # Incoming plays full-range and rises to carry the mix.
+    out_post_fade = out_post.fade_out(len(out_post))
+    overlap_post = in_post.overlay(out_post_fade)
+
+    # --- 5. Assemble ---
+    result = before + overlap_pre + overlap_post + in_rest
+    print(f"   ✅ Long blend: {len(before)/1000:.1f}s solo → {overlap_ms/1000:.1f}s blend "
+          f"(swap @ +{swap_ms/1000:.1f}s) → {len(in_rest)/1000:.1f}s solo incoming")
+    return normalize(result)
+
+
 def apply_crossfade(pre_mix: AudioSegment, next_audio: AudioSegment, fade_duration_ms: int = 5000):
     return pre_mix.append(next_audio, crossfade=fade_duration_ms)
 
@@ -1498,6 +1576,41 @@ def generate_mix(mixing_plan_json: str = "output/mixing_plan.json",
                 })
             else:
                 # Fallback: just append with crossfade
+                print("   [WARN] No previous track audio, using crossfade fallback")
+                mix = mix.append(to_audio, crossfade=2000)
+        elif transition_type == "long-blend":
+            overlap_sec = safe_float(entry.get("overlap_duration"), 32.0)
+            bass_swap_sec = safe_float(entry.get("bass_swap_offset_sec"), overlap_sec / 2.0)
+            tempo_ratio = safe_float(entry.get("tempo_ratio"), 1.0)
+
+            print(f"   Overlap: {overlap_sec:.1f}s  Bass swap: +{bass_swap_sec:.1f}s")
+            print(f"   BPM: {bpm_from:.0f} → {bpm_to:.0f}  (tempo ratio {tempo_ratio:.3f})")
+
+            if previous_track_audio:
+                transition_result = apply_long_blend(
+                    outgoing_track=previous_track_audio,
+                    incoming_track=to_audio,
+                    overlap_ms=ms(overlap_sec),
+                    bass_swap_offset_ms=ms(bass_swap_sec),
+                    tempo_ratio=tempo_ratio,
+                    bpm_from=bpm_from,
+                    bpm_to=bpm_to,
+                    track_names=(from_title, to_title),
+                )
+
+                # Splice: replace the outgoing track's region with the blend.
+                previous_track_start = len(mix) - len(previous_track_audio)
+                mix_before_previous = mix[:max(0, previous_track_start)]
+                mix = mix_before_previous + transition_result
+
+                incoming_start_in_mix = previous_track_start + max(0, len(previous_track_audio) - ms(overlap_sec))
+                mix_overview_data.append({
+                    'name': to_title,
+                    'start_ms': incoming_start_in_mix,
+                    'duration_ms': len(to_audio),
+                    'bpm': bpm_to
+                })
+            else:
                 print("   [WARN] No previous track audio, using crossfade fallback")
                 mix = mix.append(to_audio, crossfade=2000)
         else:
