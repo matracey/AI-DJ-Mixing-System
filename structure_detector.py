@@ -80,17 +80,68 @@ def clean_json_output(text: str) -> str:
     return text.replace("```json", "").replace("```", "").strip()
 
 
+_WHISPER_MODEL_SINGLETON = None
+
+
+def _get_local_whisper_model():
+    """Lazy-load and cache the faster-whisper model as a module-level singleton."""
+    global _WHISPER_MODEL_SINGLETON
+    if _WHISPER_MODEL_SINGLETON is None:
+        from faster_whisper import WhisperModel
+        model_name = os.getenv("WHISPER_MODEL", "small")
+        device = os.getenv("WHISPER_DEVICE", "cpu")
+        compute = os.getenv("WHISPER_COMPUTE", "int8")
+        _WHISPER_MODEL_SINGLETON = WhisperModel(model_name, device=device, compute_type=compute)
+    return _WHISPER_MODEL_SINGLETON
+
+
 def transcribe_song_fast(client, audio_path):
-    """Transcribe song using OpenAI Whisper API (FAST - no local model)."""
-    print(f"🔊 Transcribing: {os.path.basename(audio_path)}")
-    with open(audio_path, "rb") as audio_file:
-        result = client.audio.transcriptions.create(
-            model="whisper-1",
-            file=audio_file,
-            response_format="verbose_json",
-            timestamp_granularities=["segment"]  # Only segment-level, not word-level
-        )
-    return result.model_dump()
+    """Transcribe a song, dispatching on the WHISPER_BACKEND env var.
+
+    Backends:
+      - "local" (default): faster-whisper, lazy-loaded singleton.
+      - "openai": OpenAI Whisper API (whisper-1, verbose_json).
+      - "disabled": skip transcription entirely.
+    Always returns a dict shaped like the OpenAI response.
+    """
+    backend = os.getenv("WHISPER_BACKEND", "local").strip().lower()
+
+    if backend == "disabled":
+        print("🔇 Transcription skipped (WHISPER_BACKEND=disabled)")
+        return {"text": "", "duration": 0.0, "segments": []}
+
+    if backend == "openai":
+        print(f"🔊 Transcribing (openai): {os.path.basename(audio_path)}")
+        with open(audio_path, "rb") as audio_file:
+            result = client.audio.transcriptions.create(
+                model="whisper-1",
+                file=audio_file,
+                response_format="verbose_json",
+                timestamp_granularities=["segment"]  # Only segment-level, not word-level
+            )
+        return result.model_dump()
+
+    # Default: local faster-whisper
+    print(f"🔊 Transcribing (local): {os.path.basename(audio_path)}")
+    model = _get_local_whisper_model()
+    segments_iter, info = model.transcribe(
+        audio_path,
+        beam_size=1,
+        vad_filter=True,
+        word_timestamps=False,
+        condition_on_previous_text=False,
+    )
+    segments = []
+    text_parts = []
+    for seg in segments_iter:
+        seg_text = seg.text
+        segments.append({"start": float(seg.start), "end": float(seg.end), "text": seg_text})
+        text_parts.append(seg_text)
+    return {
+        "text": "".join(text_parts).strip(),
+        "duration": float(getattr(info, "duration", 0.0) or 0.0),
+        "segments": segments,
+    }
 
 
 def extract_beat_times_fast(audio_path, max_duration=90):
