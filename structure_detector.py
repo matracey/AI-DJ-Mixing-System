@@ -156,6 +156,8 @@ def extract_beat_times_fast(audio_path, max_duration=90):
         # Only load first 90 seconds for speed
         y, sr = librosa.load(audio_path, sr=22050, duration=max_duration)  # Lower sample rate = faster
         tempo, beats = librosa.beat.beat_track(y=y, sr=sr)
+        # librosa 0.10 returns tempo as a numpy.ndarray; coerce to scalar
+        tempo = float(np.asarray(tempo).flatten()[0])
         beat_times = librosa.frames_to_time(beats, sr=sr)
         
         # Calculate phrase boundaries (every 8 bars = 32 beats)

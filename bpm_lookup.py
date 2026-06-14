@@ -91,6 +91,8 @@ def estimate_bpm_with_librosa(audio_path):
         
         # Use beat tracking to estimate tempo
         tempo, beats = librosa.beat.beat_track(y=y, sr=sr)
+        # librosa 0.10 returns tempo as a numpy.ndarray; coerce to scalar
+        tempo = float(np.asarray(tempo).flatten()[0])
         
         # tempo is returned as float, convert to int
         bpm = int(round(tempo))
