@@ -13,7 +13,7 @@ import os
 import json
 from dotenv import load_dotenv
 try:
-    from openai import OpenAI
+    from openai_compat import OpenAI
 except Exception:
     OpenAI = None
 

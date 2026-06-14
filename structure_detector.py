@@ -17,7 +17,7 @@ import scipy.signal
 from dotenv import load_dotenv
 
 try:
-    from openai import OpenAI
+    from openai_compat import OpenAI
     import librosa
 except Exception:
     OpenAI = None

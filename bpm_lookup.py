@@ -10,7 +10,7 @@ import json
 import re
 from dotenv import load_dotenv
 try:
-    from openai import OpenAI
+    from openai_compat import OpenAI
 except Exception:
     OpenAI = None
 OpenAI = OpenAI if OpenAI else None
