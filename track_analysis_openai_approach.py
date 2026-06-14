@@ -113,7 +113,7 @@ def get_available_songs():
         return songs
         
     for filename in os.listdir(SONGS_DIR):
-        if not filename.lower().endswith(".mp3"):
+        if not filename.lower().endswith((".mp3", ".flac", ".m4a", ".wav", ".ogg")):
             continue
             
         # Clean filename
