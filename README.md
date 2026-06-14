@@ -1,5 +1,27 @@
 # AI DJ Mixing System
 
+## Forked / Extended Features
+
+This fork extends the upstream project with several improvements aimed at
+portability and instrumental/electronic music. See [CONFIG.md](CONFIG.md) for
+the full list of environment variables.
+
+- **Pluggable chat backend** - route chat completions to OpenAI, GitHub Models,
+  OpenRouter, or any OpenAI-compatible gateway via `OPENAI_BASE_URL` and
+  `OPENAI_CHAT_MODEL` (see `openai_compat.py`).
+- **Pluggable Whisper backend** - transcribe locally with `faster-whisper`, via
+  the OpenAI Whisper API, or skip transcription entirely, controlled by
+  `WHISPER_BACKEND`. Audio traffic can be routed to a separate endpoint while
+  chat stays on the primary provider.
+- **librosa 0.10 compatibility** - `beat_track` tempo is coerced from a NumPy
+  array to a scalar so the pipeline runs on modern librosa/setuptools.
+- **Instrumental fallback** - when no vocals are detected, transition points are
+  derived from the energy curve instead of defaulting to a hardcoded value.
+- **Lossless / multi-format input** - accepts `.flac`, `.m4a`, `.wav`, and
+  `.ogg` alongside `.mp3`.
+- **Tag reader** - reads artist/title from audio tags via `mutagen`, falling
+  back to filename parsing (`ai_dj_tags.py`).
+
 ## Overview
 
 The **AI DJ Mixing System** is a professional, AI-powered DJ mixing pipeline that creates seamless, radio-quality mixes from your local music library. Using advanced audio analysis, machine learning, and OpenAI's GPT models, it automatically selects tracks, analyzes their musical characteristics, detects optimal transition points, and creates professional DJ transitions with perfect beat-grid alignment, gradual tempo sync, and intelligent energy flow management.
